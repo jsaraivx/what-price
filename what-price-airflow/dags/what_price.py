@@ -12,8 +12,8 @@ from airflow.sdk import dag, task
 # local_tz = pendulum.timezone("America/Sao_Paulo")
 today = datetime.date.today()
 @dag(
-    "what_price_etl",
-    start_date=pendulum.datetime(2025,11,1),
+    "what_price_etl_2",
+    start_date=pendulum.datetime(2025,12,1),
     schedule="@daily",
     default_args={
         "owner": 'jsaraivx',
