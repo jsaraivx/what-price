@@ -1,30 +1,28 @@
 import requests
-import pandas
+import pandas as pd
 import logging
 import pendulum
 import datetime
-
+import numpy as np
 from io import StringIO
-
-from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import dag, task
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+start_date = pendulum.datetime(2020, 1, 1, tz="America/Sao_Paulo")
 
-# local_tz = pendulum.timezone("America/Sao_Paulo")
-today = datetime.date.today()
 @dag(
-    "what_price_etl_2",
-    start_date=pendulum.datetime(2025,12,1),
+    "what_price_etl",
+    start_date=start_date,
     schedule="@daily",
     default_args={
         "owner": 'jsaraivx',
         "retries": 1
     },
-    # start_date=pendulum.datetime(2025,1,1, tz=local_tz),
+    tags=['finance', 'postgres', 'etl'],
     catchup=True
 )
 
 
-def what_price_dag():
+def what_price_etl():
 
     @task
     def extract_data(**kwargs):
@@ -43,110 +41,84 @@ def what_price_dag():
         except Exception as e:
             logging.warning(e)
 
+    @task
+    def transform_data(csv_data):
+        if not csv_data:
+            logging.warning("No data for transform.")
+            return None
 
-    @task(retries=1)
-    def load_df(data):
-        StrinIOdata = StringIO(data)
+        string_io_data = StringIO(csv_data)
 
-        dcolumns = ("Quote_Date", "Currency_Code","Type","Currency","Buy_Rate","Sell_Rate","Parity_Buy","Parity_Sell")
-        dcolumnst = {
+        dcolumns = ("Quote_Date", "Currency_Code", "Type", "Currency", "Buy_Rate", "Sell_Rate", "Parity_Buy", "Parity_Sell")
+        dtypes = {
             "Quote_Date": str,
             "Currency_Code": str,
             "Type": str,
-            "Currency": str,
-            "Buy_Rate": float,
-            "Sell_Rate": float,
-            "Parity_Buy": float,
-            "Parity_Sell": float
-            }
+            "Currency": str
+        }
 
         try:
-            df = pandas.read_csv(StrinIOdata, sep=";", decimal=",", encoding="utf-8", thousands=".", header=None, names=dcolumns, dtype=dcolumnst, parse_dates=['Quote_Date'])
-            df['Processing_date'] = datetime.datetime.today()
+            df = pd.read_csv(
+                string_io_data, sep=";", decimal=",", encoding="utf-8", thousands=".", header=None, names=dcolumns, dtype=dtypes
+            )
+            
+            df['Quote_Date'] = pd.to_datetime(df['Quote_Date'], format='%d/%m/%Y', errors='coerce')
+            df['Processing_date'] = datetime.datetime.now()
+            df.columns = [
+                'quote_date', 'currency_code', 'type', 'currency', 
+                'buy_rate', 'sell_rate', 'parity_buy', 'parity_sell', 'processing_date'
+            ]
+            
+
+            df['quote_date'] = df['quote_date'].astype(str)
+            df['processing_date'] = df['processing_date'].astype(str)
+
+            df = df.replace({np.nan: None, 'NaT': None})
+
+            logging.info(f"Processed DataFrame with {len(df)} rows.")
+            
+            return df.to_dict(orient='records')
+
         except Exception as e:
-            logging.exception(e)
-            return None
-        if df.empty:
-            logging.warning("not data for today!")
-            return None
-        else:
-            logging.warning("sucess on data scrap!")
-            return df
+            logging.exception(f"Transform Error: {e}")
+            raise e
+
     @task
-    def create_table():
-        pgh = PostgresHook(postgres_conn_id="pg_conn")
-        conn = pgh.get_conn()
-        curs = conn.cursor()
-        try:
-            curs.execute("""
-                CREATE TABLE IF NOT EXISTS public.prices (
-                    id SERIAL PRIMARY KEY,
-                    Quote_Date TIMESTAMP,
-                    Currency_Code VARCHAR(10),
-                    Type VARCHAR(50),
-                    Currency VARCHAR(4),
-                    Buy_Rate FLOAT,
-                    Sell_Rate FLOAT,
-                    Parity_Buy FLOAT,
-                    Parity_Sell FLOAT,
-                    Processing_date TIMESTAMP
-                )
-            """)
-            conn.commit()
-            logging.warning("Table created successfully")
-        except Exception as e:
-            logging.warning(f"Error creating table: {e}")
-        finally:
-            curs.close()
-            conn.close()
-        
-    @task
-    def ingest_data(data):
-        if data is None:
+    def ingest_data(data_list):
+        if not data_list:
             logging.warning("No data to ingest")
             return
-        
+
         pgh = PostgresHook(postgres_conn_id="pg_conn")
-        conn = pgh.get_conn()
-        curs = conn.cursor()
+        
+        target_fields = [
+            'quote_date', 'currency_code', 'type', 'currency', 
+            'buy_rate', 'sell_rate', 'parity_buy', 'parity_sell', 'processing_date'
+        ]
+        
+        rows = []
+        for row in data_list:
+            rows.append(tuple(row[field] for field in target_fields))
+
+        logging.info(f"Start ingestion of {len(rows)} rows...")
+
         try:
-            for _, row in data.iterrows():
-                curs.execute("""
-                    INSERT INTO public.prices (
-                        Quote_Date,
-                        Currency_Code,
-                        Type,
-                        Currency,
-                        Buy_Rate,
-                        Sell_Rate,
-                        Parity_Buy,
-                        Parity_Sell,
-                        Processing_date
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    row['Quote_Date'],
-                    row['Currency_Code'],
-                    row['Type'],
-                    row['Currency'],
-                    row['Buy_Rate'],
-                    row['Sell_Rate'],
-                    row['Parity_Buy'],
-                    row['Parity_Sell'],
-                    row['Processing_date']
-                ))
-            conn.commit()
-            logging.warning(f"Successfully inserted {len(data)} rows")
+            pgh.insert_rows(
+                table="public.currency_quotes_bronze",
+                rows=rows,
+                target_fields=target_fields,
+                commit_every=1000
+            )
+            logging.info("Data ingested on Database")
+            
         except Exception as e:
-            logging.warning(f"Error inserting data: {e}")
-            conn.rollback()
-        finally:
-            curs.close()
-            conn.close()
+            logging.error(f"Data ingestion error: {e}")
+            raise e
 
-    getdata = extract_data()
-    getdf = load_df(getdata)
-    finaldbprocess = ingest_data(getdf)
+    # WORKFLOW DEFINITION    
+    raw_csv = extract_data()
+    clean_data = transform_data(raw_csv)
+    ingest_data(clean_data)
 
-    [getdata >> getdf] >>  finaldbprocess
-what_price_dag()
+
+what_price_etl()
