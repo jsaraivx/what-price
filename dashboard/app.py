@@ -29,7 +29,10 @@ def get_db_conn():
         st.error("Connection string not found.")
         st.stop()
 
-    return create_engine(db_connection_str)
+    return create_engine(
+        db_connection_str,
+        connect_args={'sslmode': 'require'} 
+    )
 
 # --- 3. Data Loading & Processing ---
 @st.cache_data(ttl=3600) # 1 hour cache
