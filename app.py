@@ -1,13 +1,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from io import StringIO
-
-# --- Page Configuration ---
 
 # --- 1. Data Loading & Processing ---
 
-df = pd.read_csv("data-1765334584657.csv")
+df = pd.read_parquet("data.parquet")
 
 df['abs_spread'] = df['sell_rate'] - df['buy_rate']
 df['spread_pct'] = (df['abs_spread'] / df['buy_rate']) * 100
@@ -50,146 +47,105 @@ with st.sidebar:
 
 # --- 4. MAIN DASHBOARD CONTENT ---
 
-st.title("📊 Currency Exchange Monitoring")
-st.markdown("Analytical view of buy rates, sell rates, spreads, and market parity.")
+st.title("📊 Currency Exchange Analytics")
+st.markdown("High-performance view of market trends, volatility, and correlations.")
 
-# --- SECTION A: Business KPIs ---
+
+# 1. TIME SERIES AGGREGATION (Resampling)
+df['quote_date'] = pd.to_datetime(df['quote_date'])
+df_daily = df.set_index('quote_date').groupby('currency')[['buy_rate', 'sell_rate', 'spread_pct']].resample('D').mean().reset_index()
+
+# 2. VOLATILITY CALCULATION
+df_volatility = df.groupby('currency')['buy_rate'].std().reset_index()
+df_volatility.columns = ['currency', 'volatility_std']
+
+# 3. CORRELATION MATRIX (Top 10 Currencies only to keep it readable)
+# Pivot table to structure data for correlation analysis
+top_currencies = df['currency'].value_counts().nlargest(10).index
+df_pivot = df[df['currency'].isin(top_currencies)].pivot_table(index='quote_date', columns='currency', values='buy_rate')
+df_corr = df_pivot.corr()
+
+# --- DASHBOARD VISUALIZATION ---
+
+# --- KPI SECTION ---
 col1, col2, col3, col4 = st.columns(4)
-
 with col1:
-    st.metric("Monitored Currencies", df['currency'].nunique())
-
+    st.metric("Total Records Processed", f"{len(df):,}")
 with col2:
-    # Highest Spread
-    best_spread = df.loc[df['spread_pct'].idxmax()]
-    st.metric(
-        "Max Spread (%)", 
-        f"{best_spread['spread_pct']:.2f}%", 
-        f"Currency: {best_spread['currency']}"
-    )
-
+    avg_spread = df['spread_pct'].mean()
+    st.metric("Global Avg Spread", f"{avg_spread:.2f}%")
 with col3:
-    # Strongest Currency
-    strongest = df.loc[df['buy_rate'].idxmax()]
-    st.metric("Highest Value (Nominal)", strongest['currency'], f"{strongest['buy_rate']:.4f}")
-
+    # Most Volatile Currency
+    most_volatile = df_volatility.sort_values('volatility_std', ascending=False).iloc[0]
+    st.metric("Most Volatile Currency", most_volatile['currency'], f"±{most_volatile['volatility_std']:.4f}")
 with col4:
-    # Technical KPI
-    ref_date = df['quote_date'].max()
-    st.metric("Reference Date", ref_date.strftime('%Y-%m-%d'))
+    latest_date = df['quote_date'].max().strftime('%Y-%m-%d')
+    st.metric("Latest Quote", latest_date)
 
-st.markdown("---")
+st.divider()
 
-# --- SECTION B: Market Efficiency (Row 1) ---
+# --- ROW 1: TRENDS OVER TIME (RESAMPLED) ---
+st.subheader("📈 Rate Evolution (Daily Average)")
+st.caption("Data is **resampled to daily averages** to optimize performance and visualize long-term trends.")
 
-c1, c2 = st.columns([3, 2]) 
+# Filter multiselect for the line chart
+selected_currencies = st.multiselect(
+    "Select Currencies to Compare:", 
+    options=df_daily['currency'].unique(),
+    default=df_daily['currency'].unique()[:5] # Pre-select first 5
+)
+
+if selected_currencies:
+    # Filtering the PRE-AGGREGATED dataframe, not the raw one
+    chart_data = df_daily[df_daily['currency'].isin(selected_currencies)]
+    
+    fig_line = px.line(
+        chart_data,
+        x='quote_date',
+        y='buy_rate',
+        color='currency',
+        markers=True,
+        title="Buy Rate Trends (Daily Aggregated)",
+        template="plotly_white"
+    )
+    st.plotly_chart(fig_line, use_container_width=True)
+else:
+    st.info("Select currencies above to visualize trends.")
+
+# --- ROW 2: VOLATILITY & CORRELATION ---
+c1, c2 = st.columns(2)
 
 with c1:
-    st.subheader("Scatter: Base Rate vs. Spread")
-    st.caption("Identifies anomalies. Currencies at the top have high spreads (expensive to trade).")
+    st.subheader("⚡ Volatility Ranking (Risk)")
+    st.caption("Standard Deviation of Buy Rate. Higher bars = Unstable/Risky currency.")
     
-    fig_scatter = px.scatter(
-        df,
-        x="buy_rate",
-        y="spread_pct",
-        color="currency",
-        size="buy_rate",
-        hover_data=["currency", "sell_rate", "parity_buy"],
-        log_x=True, # Log scale for value disparity (VES vs PAB)
-        title="Currency Value vs. Margin Relationship (%)",
-        template="plotly_white"
+    # Sort and take top 10 most volatile
+    top_volatility = df_volatility.sort_values('volatility_std', ascending=False).head(10)
+    
+    fig_vol = px.bar(
+        top_volatility,
+        x='currency',
+        y='volatility_std',
+        color='volatility_std',
+        color_continuous_scale='Reds',
+        title="Top 10 Most Volatile Currencies"
     )
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    st.plotly_chart(fig_vol, use_container_width=True)
 
 with c2:
-    st.subheader("Top 5 Highest Spreads")
-    st.caption("Currencies with the largest difference between buy/sell rates.")
+    st.subheader("🔗 Market Correlations")
+    st.caption("Do currencies move together? (1.0 = Perfect Sync, -1.0 = Inverse).")
     
-    top_spreads = df.nlargest(5, 'spread_pct').sort_values('spread_pct', ascending=True)
-    
-    fig_bar = px.bar(
-        top_spreads,
-        x="spread_pct",
-        y="currency",
-        orientation='h',
-        text_auto='.2f',
-        color="spread_pct",
-        color_continuous_scale="Blues",
+    fig_corr = px.imshow(
+        df_corr,
+        text_auto=".2f",
+        aspect="auto",
+        color_continuous_scale="RdBu_r", # Red=Correlation, Blue=Inverse
+        title="Correlation Matrix (Top 10 Currencies)"
     )
-    fig_bar.update_layout(xaxis_title="Spread %", yaxis_title=None, showlegend=False)
-    st.plotly_chart(fig_bar, use_container_width=True)
+    st.plotly_chart(fig_corr, use_container_width=True)
 
-# --- SECTION C: Parity & Distribution (Row 2) ---
-
-st.subheader("📉 Market vs. Parity Deviation")
-st.caption("Positive values indicate the market rate is **higher** than the theoretical parity (Overvalued).")
-
-# Filtering out near-zero values to clean the chart
-df_parity = df[df['parity_deviation'].abs() > 0.01].sort_values('parity_deviation')
-
-fig_parity = px.bar(
-    df_parity,
-    x="parity_deviation",
-    y="currency",
-    orientation='h',
-    title="Parity Deviation (%)",
-    color="parity_deviation",
-    color_continuous_scale="RdBu", # Red/Blue diverging scale
-    text_auto='.2f'
-)
-fig_parity.update_layout(xaxis_title="Deviation %", yaxis_title=None, showlegend=False)
-st.plotly_chart(fig_parity, use_container_width=True)
-
-# --- SECTION D: Overview & Stats (Row 3) ---
-
-c3, c4 = st.columns(2)
-
-with c3:
-    st.subheader("🗺️ Market Map (Treemap)")
-    st.caption("Size = Buy Rate (Log adjusted). Color = Spread % (Red is high).")
-    
-    # Helper for treemap sizing (avoiding zeros or tiny numbers breaking visuals)
-    df['log_buy_rate'] = df['buy_rate'].apply(lambda x: 1 if x < 0.0001 else x) 
-
-    fig_tree = px.treemap(
-        df,
-        path=['currency'],
-        values='log_buy_rate', 
-        color='spread_pct',
-        hover_data=['buy_rate', 'sell_rate'],
-        color_continuous_scale='RdYlGn_r', # Red is high spread (Bad/Expensive)
-    )
-    st.plotly_chart(fig_tree, use_container_width=True)
-
-with c4:
-    st.subheader("📦 Spread Distribution Analysis")
-    st.caption("Statistical view to detect outliers in profit margins.")
-
-    fig_box = px.box(
-        df,
-        y="spread_pct",
-        points="all",
-        hover_data=["currency"],
-        title="Spread Variability Box Plot",
-        template="plotly_white"
-    )
-    st.plotly_chart(fig_box, use_container_width=True)
-
-# --- SECTION E: Data Grid (Raw Data) ---
-with st.expander("🔍 Inspect Processed Data (Gold Layer)"):
-    st.markdown("Raw data table available for audit.")
-    
-    st.dataframe(
-        df[['quote_date', 'currency', 'buy_rate', 'sell_rate', 'spread_pct', 'parity_deviation', 'processing_date']]
-        .sort_values(by='currency'),
-        column_config={
-            "quote_date": st.column_config.DateColumn("Quote Date"),
-            "processing_date": st.column_config.DatetimeColumn("Processing Date", format="YYYY-MM-DD HH:mm"),
-            "buy_rate": st.column_config.NumberColumn("Buy Rate", format="%.5f"),
-            "sell_rate": st.column_config.NumberColumn("Sell Rate", format="%.5f"),
-            "spread_pct": st.column_config.ProgressColumn("Spread %", format="%.2f%%", min_value=0, max_value=df['spread_pct'].max()),
-            "parity_deviation": st.column_config.NumberColumn("Parity Dev %", format="%.2f%%"),
-        },
-        use_container_width=True,
-        hide_index=True
-    )
+# --- RAW DATA SAMPLER ---
+with st.expander("🔍 Audit Raw Data (Sampled)"):
+    st.markdown("Displaying a random sample of 100 rows from the dataset.")
+    st.dataframe(df.sample(100).sort_values('quote_date'), use_container_width=True, hide_index=True)
