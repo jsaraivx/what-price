@@ -1,22 +1,11 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import os 
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
 
-# --- 1. Data Loading & Processing ---
-
-df = pd.read_parquet("data.parquet")
-
-df['abs_spread'] = df['sell_rate'] - df['buy_rate']
-df['spread_pct'] = (df['abs_spread'] / df['buy_rate']) * 100
-df['parity_deviation'] = ((df['buy_rate'] - df['parity_buy'])/ df['parity_buy'])*100
-datef = '%Y-%m-%d'
-df['quote_date'] = pd.to_datetime(df['quote_date'])
-df['processing_date'] = pd.to_datetime(df['processing_date'])
-df['ingest_lag'] = df['processing_date'] - df['quote_date'] 
-df['duration'] = df['ingest_lag']
-
-
-# --- PAGE CONFIGURATION ---
+# --- 1. PAGE CONFIGURATION (MUST BE THE FIRST STREAMLIT LINE) ---
 st.set_page_config(
     page_title="What-Price | View",
     page_icon="🪙",
@@ -24,6 +13,57 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# --- 2. Database Connection ---
+@st.cache_resource
+def get_db_conn():
+    # Try reading from .env (local) or st.secrets (cloud)
+    load_dotenv('.env')
+    
+    # Prioritize st.secrets if it exists (for Deploy), otherwise use .env
+    if "POSTGRES_URL" in st.secrets:
+        db_connection_str = st.secrets["POSTGRES_URL"]
+    else:
+        db_connection_str = os.getenv("POSTGRES_URL")
+    
+    if not db_connection_str:
+        st.error("Connection string not found.")
+        st.stop()
+
+    return create_engine(db_connection_str)
+
+# --- 3. Data Loading & Processing ---
+@st.cache_data(ttl=3600) # 1 hour cache
+def load_data():
+    try:
+        engine = get_db_conn()
+        query = """
+        SELECT * FROM currency_quotes_bronze 
+        ORDER BY quote_date DESC
+        """
+        with engine.connect() as conn:
+            # Using index_col='id' if your table has a PK, otherwise remove
+            df = pd.read_sql_query(query, conn)
+        return df
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return pd.DataFrame()
+
+df = load_data()
+
+if df.empty:
+    st.warning("No processed data available in the Database yet.")
+    st.stop()
+
+# --- FEATURE ENGINEERING ---
+df['quote_date'] = pd.to_datetime(df['quote_date'])
+df['processing_date'] = pd.to_datetime(df['processing_date'])
+
+df['abs_spread'] = df['sell_rate'] - df['buy_rate']
+df['spread_pct'] = (df['abs_spread'] / df['buy_rate']) * 100
+df['parity_deviation'] = ((df['buy_rate'] - df['parity_buy']) / df['parity_buy']) * 100
+df['ingest_lag'] = df['processing_date'] - df['quote_date'] 
+
+# --- 4. SIDEBAR METADATA ---
 with st.sidebar:
     st.header("⚙️ Pipeline Metadata")
     st.info("Technical Data Ingestion Stats")
@@ -34,35 +74,42 @@ with st.sidebar:
     st.markdown(f"""
     **Status:** ✅ Success
     
-    **Rows Ingested:** `{row_count}`
+    **Rows Ingested:** `{row_count:,}`
     
     **Last Processing:**
     `{last_process.strftime('%Y-%m-%d %H:%M:%S')}`
     
-    **Source:** https://www.bcb.gov.br/ API
+    **Source:** Central Bank of Brazil API
     """)
     
     st.divider()
     st.caption("Developed by João Saraiva - Data Engineer")
 
-# --- 4. MAIN DASHBOARD CONTENT ---
+# --- 5. MAIN DASHBOARD CONTENT ---
 
 st.title("📊 Currency Exchange Analytics")
 st.markdown("High-performance view of market trends, volatility, and correlations.")
 
+# --- DATA PREP FOR CHARTS ---
 
-# 1. TIME SERIES AGGREGATION (Resampling)
-df['quote_date'] = pd.to_datetime(df['quote_date'])
-df_daily = df.set_index('quote_date').groupby('currency')[['buy_rate', 'sell_rate', 'spread_pct']].resample('D').mean().reset_index()
+# A. Time Series Aggregation (Correction with pd.Grouper)
+df_daily = df.groupby(['currency', pd.Grouper(key='quote_date', freq='D')])[[
+    'buy_rate', 'sell_rate', 'spread_pct'
+]].mean().reset_index()
 
-# 2. VOLATILITY CALCULATION
+# B. Volatility Calculation
 df_volatility = df.groupby('currency')['buy_rate'].std().reset_index()
 df_volatility.columns = ['currency', 'volatility_std']
 
-# 3. CORRELATION MATRIX (Top 10 Currencies only to keep it readable)
-# Pivot table to structure data for correlation analysis
+# C. Correlation Matrix (Top 10 Currencies)
 top_currencies = df['currency'].value_counts().nlargest(10).index
-df_pivot = df[df['currency'].isin(top_currencies)].pivot_table(index='quote_date', columns='currency', values='buy_rate')
+# Pivot table needs aggregation if there are duplicates on the day
+df_pivot = df[df['currency'].isin(top_currencies)].pivot_table(
+    index='quote_date', 
+    columns='currency', 
+    values='buy_rate',
+    aggfunc='mean' 
+)
 df_corr = df_pivot.corr()
 
 # --- DASHBOARD VISUALIZATION ---
@@ -70,33 +117,33 @@ df_corr = df_pivot.corr()
 # --- KPI SECTION ---
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("Total Records Processed", f"{len(df):,}")
+    st.metric("Total Records", f"{len(df):,}")
 with col2:
     avg_spread = df['spread_pct'].mean()
     st.metric("Global Avg Spread", f"{avg_spread:.2f}%")
 with col3:
-    # Most Volatile Currency
-    most_volatile = df_volatility.sort_values('volatility_std', ascending=False).iloc[0]
-    st.metric("Most Volatile Currency", most_volatile['currency'], f"±{most_volatile['volatility_std']:.4f}")
+    if not df_volatility['volatility_std'].isna().all():
+        most_volatile = df_volatility.sort_values('volatility_std', ascending=False).iloc[0]
+        st.metric("Volatile Currency", most_volatile['currency'], f"±{most_volatile['volatility_std']:.4f}")
+    else:
+        st.metric("Volatile Currency", "N/A")
 with col4:
     latest_date = df['quote_date'].max().strftime('%Y-%m-%d')
     st.metric("Latest Quote", latest_date)
 
 st.divider()
 
-# --- ROW 1: TRENDS OVER TIME (RESAMPLED) ---
+# --- ROW 1: TRENDS OVER TIME ---
 st.subheader("📈 Rate Evolution (Daily Average)")
-st.caption("Data is **resampled to daily averages** to optimize performance and visualize long-term trends.")
+st.caption("Data is **resampled to daily averages** to optimize performance.")
 
-# Filter multiselect for the line chart
 selected_currencies = st.multiselect(
     "Select Currencies to Compare:", 
     options=df_daily['currency'].unique(),
-    default=df_daily['currency'].unique()[:5] # Pre-select first 5
+    default=df_daily['currency'].unique()[:5]
 )
 
 if selected_currencies:
-    # Filtering the PRE-AGGREGATED dataframe, not the raw one
     chart_data = df_daily[df_daily['currency'].isin(selected_currencies)]
     
     fig_line = px.line(
@@ -105,7 +152,7 @@ if selected_currencies:
         y='buy_rate',
         color='currency',
         markers=True,
-        title="Buy Rate Trends (Daily Aggregated)",
+        title="Buy Rate Trends",
         template="plotly_white"
     )
     st.plotly_chart(fig_line, use_container_width=True)
@@ -116,10 +163,8 @@ else:
 c1, c2 = st.columns(2)
 
 with c1:
-    st.subheader("⚡ Volatility Ranking (Risk)")
-    st.caption("Standard Deviation of Buy Rate. Higher bars = Unstable/Risky currency.")
+    st.subheader("⚡ Volatility Ranking")
     
-    # Sort and take top 10 most volatile
     top_volatility = df_volatility.sort_values('volatility_std', ascending=False).head(10)
     
     fig_vol = px.bar(
@@ -128,24 +173,22 @@ with c1:
         y='volatility_std',
         color='volatility_std',
         color_continuous_scale='Reds',
-        title="Top 10 Most Volatile Currencies"
+        title="Top 10 Most Volatile"
     )
     st.plotly_chart(fig_vol, use_container_width=True)
 
 with c2:
-    st.subheader("🔗 Market Correlations")
-    st.caption("Do currencies move together? (1.0 = Perfect Sync, -1.0 = Inverse).")
+    st.subheader("🔗 Correlations")
     
     fig_corr = px.imshow(
         df_corr,
         text_auto=".2f",
         aspect="auto",
-        color_continuous_scale="RdBu_r", # Red=Correlation, Blue=Inverse
-        title="Correlation Matrix (Top 10 Currencies)"
+        color_continuous_scale="RdBu_r",
+        title="Correlation Matrix (Top 10)"
     )
     st.plotly_chart(fig_corr, use_container_width=True)
 
-# --- RAW DATA SAMPLER ---
-with st.expander("🔍 Audit Raw Data (Sampled)"):
-    st.markdown("Displaying a random sample of 100 rows from the dataset.")
-    st.dataframe(df.sample(100).sort_values('quote_date'), use_container_width=True, hide_index=True)
+# --- RAW DATA ---
+with st.expander("🔍 Audit Raw Data"):
+    st.dataframe(df.sample(min(100, len(df))).sort_values('quote_date', ascending=False), use_container_width=True, hide_index=True)
