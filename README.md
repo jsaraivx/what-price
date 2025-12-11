@@ -8,6 +8,10 @@ An end-to-end data engineering project that automates the extraction of historic
 ![Airflow](https://img.shields.io/badge/Orchestration-Apache%20Airflow-orange)
 ![Streamlit](https://img.shields.io/badge/Frontend-Streamlit-red)
 
+
+### Live link to app: [WhatPrice ETL](https://whatprice-etl.streamlit.app/)
+
+
 ## 🏗️ Architecture
 
 The project follows a modern ELT (Extract, Load, Transform) architecture managed within a monorepo structure.
