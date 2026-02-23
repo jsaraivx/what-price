@@ -51,7 +51,7 @@ This project was built using industry-standard tools for Data Engineering:
 |**Database**|PostgreSQL|Bronze/Silver layer storage.|
 |**ETL Engine**|SQLAlchemy, Python, SQL|Data manipulation and schema enforcement.|
 |**Frontend**|Streamlit|Interactive Web App for analytics.|
-|**DevOps**|AstroCLI|Containerization for local development.|
+|**DevOps**|Docker Compose|Local development environment for Airflow.|
 
 ## 📂 Data Source & Schema
 
@@ -80,59 +80,76 @@ This project was built using industry-standard tools for Data Engineering:
 
 ### Prerequisites
 
-- Docker & Docker Compose
-    
-- Python 3.9+
-    
-- Astro CLI (Optional, but recommended)
-    
+- [Docker](https://www.docker.com/products/docker-desktop/) & Docker Compose
+- Python 3.9+ (for the dashboard only)
 
 ### 1. Clone the repository
-
-Bash
 
 ```bash
 git clone https://github.com/jsaraivx/what-price.git
 cd what-price
 ```
 
-### 2. Start Airflow (ETL)
+### 2. Configure environment variables
 
-Using Astro CLI (Recommended):
+```bash
+cp .env_example .env
+# Fill in your Neon DB credentials in .env
+```
 
-Bash
+##### Generate a secure Airflow secret key:
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+# Paste the result as AIRFLOW_SECRET_KEY in .env
+```
+
+### 3. Start Airflow (ETL)
 
 ```bash
 cd whatprice-airflow
-astro dev start
+docker compose up -d
 ```
 
 _Access Airflow UI at: `http://localhost:8080`_
 
-Login with acess:
-```bash
-User: admin
+```
+User:     admin
 Password: admin
 ```
 
-### 3. Config the Airflow Connections / .env
+### 4. Configure the Airflow Connection (Neon DB)
 
-You need to set a Connection with type Postgres, for connect with your DB.
+Create a Postgres connection in the Airflow UI under **Admin → Connections**:
+
 ![Set Airflow connection](docs/Airflow_conn.png)
 
-##### You NEED to config '.env' file before continue, for this, use '.env_example' as template.
+| Field | Value |
+|---|---|
+| Connection Id | `pg_conn` |
+| Connection Type | `Postgres` |
+| Host | your Neon host |
+| Schema | your DB name |
+| Login / Password | your Neon credentials |
+| Port | `5432` |
 
-### 4. Start Dashboard
+### 5. Start Dashboard
 
-Bash
-
-```
+```bash
 cd ../dashboard
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
 _Access Dashboard at: `http://localhost:8501`_
+
+### Useful Docker Commands
+
+```bash
+docker compose logs -f             # follow all logs
+docker compose logs airflow-scheduler -f   # scheduler logs only
+docker compose down                # stop everything
+docker compose down -v             # stop and delete volumes (full reset)
+```
 
 ## 📊 Visualizations
 

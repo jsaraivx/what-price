@@ -8,8 +8,6 @@ etc/
 venv/
 __pycache__/
 *.parquet 
-airflow/logs/
-airflow/plugins/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,16 +17,11 @@ env/
 .env
 .env.*
 secrets.toml
-airflow_settings.yaml
 .vscode/
 .idea/
+# Docker Compose generated volumes
 whatprice-airflow/logs/
+whatprice-airflow/plugins/
 whatprice-airflow/tmp/
-whatprice-airflow/airflow.db
-whatprice-airflow/airflow.cfg
-whatprice-airflow/standalone_admin_password.txt
-whatprice-airflow/webserver_config.py
-whatprice-airflow/packages.txt
-whatprice-airflow/.astro/
 
 .DS_Store
