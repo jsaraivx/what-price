@@ -14,7 +14,7 @@ An end-to-end data engineering project that automates the extraction of historic
 
 ## 🏗️ Architecture
 
-The project follows a modern ELT (Extract, Load, Transform) architecture managed within a monorepo structure.
+The project follows a modern ETL (Extract, Transform, Load) architecture managed within a monorepo structure.
 
 ```mermaid
 graph LR
@@ -91,9 +91,9 @@ This project was built using industry-standard tools for Data Engineering:
 
 Bash
 
-```
-git clone [https://github.com/YOUR_USERNAME/currency-exchange-etl.git](https://github.com/YOUR_USERNAME/currency-exchange-etl.git)
-cd currency-exchange-etl
+```bash
+git clone https://github.com/jsaraivx/what-price.git
+cd what-price
 ```
 
 ### 2. Start Airflow (ETL)
@@ -102,8 +102,8 @@ Using Astro CLI (Recommended):
 
 Bash
 
-```
-cd airflow
+```bash
+cd whatprice-airflow
 astro dev start
 ```
 
