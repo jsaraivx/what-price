@@ -76,6 +76,23 @@ This project was built using industry-standard tools for Data Engineering:
 |`parity_sell`|`NUMERIC(20,10)`|Parity for sale|
 |`processing_date`|`TIMESTAMP`|ETL Ingestion Metadata|
 
+### 🗄️ Database Setup
+
+Before running the DAG for the first time, execute the migration on your Neon database:
+
+```bash
+# Using psql (replace with your Neon connection string)
+psql $POSTGRES_URL -f migrations/001_setup_bronze_table.sql
+```
+
+Or copy-paste the contents of [`migrations/001_setup_bronze_table.sql`](migrations/001_setup_bronze_table.sql) directly in the [Neon SQL Editor](https://console.neon.tech/).
+
+This migration:
+- Creates `currency_quotes_bronze` table (idempotent — safe to re-run)
+- Adds `UNIQUE(quote_date, currency_code, type)` — required for `ON CONFLICT DO NOTHING`
+- Creates performance indexes on `quote_date` and `currency`
+- Creates the `currency_quotes_silver` view with pre-computed spread and parity metrics
+
 ## 🚀 How to Run Locally
 
 ### Prerequisites
@@ -94,12 +111,14 @@ cd what-price
 
 ```bash
 cp .env_example .env
-# Fill in your Neon DB credentials in .env
 ```
 
-##### Generate a secure Airflow secret key:
+Fill in your Neon DB credentials in the `.env` file. Be sure to also set `AIRFLOW_CONN_PG_CONN` (following the example) to avoid configuring the connection manually in the UI later.
+
+##### Generate a secure Airflow 3 secret key:
+Airflow 3 requires a url-safe base64 string for internal API JWT authentication. Generate it with:
 ```bash
-python3 -c "import secrets; print(secrets.token_hex(32))"
+python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode('utf-8'))"
 # Paste the result as AIRFLOW_SECRET_KEY in .env
 ```
 
@@ -119,6 +138,10 @@ Password: admin
 
 ### 4. Configure the Airflow Connection (Neon DB)
 
+**Automated Setup (Recommended):**
+If you placed the `AIRFLOW_CONN_PG_CONN` variable in your `.env` file, Airflow will automatically hook up to the database on start, requiring no action on your part.
+
+**Alternative (Manual Setup UI):**
 Create a Postgres connection in the Airflow UI under **Admin → Connections**:
 
 ![Set Airflow connection](docs/Airflow_conn.png)
@@ -155,9 +178,12 @@ docker compose down -v             # stop and delete volumes (full reset)
 
 The dashboard provides real-time insights into market volatility and exchange rate spreads.
 
-**For default, the ETL will extract data from API for dates after 2020-01-01.**
-
-**You can change this in dag file.**
+## ⚡ Smart Catchup & Resiliency
+The DAG (`what_price_etl`) is optimized for robustness under Airflow 3 (LocalExecutor):
+- **Dynamic Start Date**: The DAG queries your NeonDB for the most recent data loaded (`MAX(quote_date)`) and dynamically shifts its `start_date`. This avoids heavy 2020-backfills every time you reset the project container.
+- **24-Hour Cache**: The dynamic date is cached locally preventing abusive querying on your free-tier database due to Airflow's 30s DAG parser.
+- **API Resiliency**: Safely skips extraction during weekends and Brazilian holidays utilizing `AirflowSkipException`.
+- **Duplicate Prevention**: Ingestion relies on `ON CONFLICT DO NOTHING` for idempotency on manual runs.
 
 ## 📚 References & Documentation
 
