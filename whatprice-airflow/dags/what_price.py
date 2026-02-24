@@ -99,6 +99,7 @@ def what_price_etl():
 
         # ── Extract from BCB API ────────────────────────────────────────
         url = f"http://www4.bcb.gov.br/Download/fechamento/{date_str}.csv"
+        
         logging.info(f"Request URL: {url}")
 
         try:
