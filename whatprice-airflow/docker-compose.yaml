@@ -1,5 +1,5 @@
 # ============================================================
-# What-Price ETL — Local Airflow 3.0 via Docker Compose
+# What-Price ETL — Local Airflow 3.1.7 via Docker Compose
 # ============================================================
 # Usage:
 #   echo -e "AIRFLOW_UID=$(id -u)" >> .env    ← run once on Linux/Mac
@@ -8,11 +8,11 @@
 #   docker compose down -v                    ← full reset
 #
 # Access: http://localhost:8080
-# Login:  admin / admin
+# Login:  admin / airflow
 # ============================================================
 
 x-airflow-common: &airflow-common
-  image: apache/airflow:3.0.0
+  image: apache/airflow:3.1.7
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
@@ -24,11 +24,17 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__TEST_CONNECTION: Enabled
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-changeme-dev-only}
-    # Extra packages (avoids custom Dockerfile for simple installs)
+    # Security
+    AIRFLOW__CORE__INTERNAL_API_SECRET_KEY: ${AIRFLOW_INTERNAL_API_SECRET_KEY:-rlS7aXJuW3AydzT1r7tnzxKPT6p9NwpUJo0pNVS7nMQ=}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-a9RkOlk8uA2t8P3rW8v9pQaQwE8zD8xY2cV0vN2m1L4=}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-a9RkOlk8uA2t8P3rW8v9pQaQwE8zD8xY2cV0vN2m1L4=}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_SECRET_KEY:-a9RkOlk8uA2t8P3rW8v9pQaQwE8zD8xY2cV0vN2m1L4=}
+    AIRFLOW__API__AUTH_BACKENDS: airflow.providers.fab.auth_manager.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+    # Extra packages
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-pandas requests apache-airflow-providers-postgres pyarrow}
-    # Neon DB URL (used by dashboard)
+    # User-defined connections
     POSTGRES_URL: ${POSTGRES_URL:-}
+    AIRFLOW_CONN_PG_CONN: ${AIRFLOW_CONN_PG_CONN:-}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
@@ -40,8 +46,6 @@ x-airflow-common: &airflow-common
       condition: service_healthy
 
 services:
-
-  # ── Airflow Metadata DB ────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     environment:
@@ -57,26 +61,23 @@ services:
       start_period: 5s
     restart: always
 
-  # ── Init: DB migration + admin user creation ───────────────────
   airflow-init:
     <<: *airflow-common
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        mkdir -p /opt/airflow/{logs,dags,plugins,config}
-        /entrypoint airflow db migrate
-        /entrypoint airflow users create \
-          --username admin \
-          --firstname Admin \
-          --lastname User \
-          --role Admin \
-          --email admin@example.com \
-          --password admin \
-          2>/dev/null || echo "Admin user already exists, skipping."
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin  # Note: The official docs suggest airflow/airflow, but we'll keep admin/admin.
+      _AIRFLOW_WWW_USER_ROLE: Admin
+      _AIRFLOW_WWW_USER_EMAIL: admin@example.com
+      _AIRFLOW_WWW_USER_FIRSTNAME: Admin
+      _AIRFLOW_WWW_USER_LASTNAME: User
     restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
-  # ── API Server (UI + REST API) ─────────────────────────────────
   airflow-apiserver:
     <<: *airflow-common
     command: api-server
@@ -94,7 +95,6 @@ services:
       start_period: 30s
     restart: always
 
-  # ── Scheduler ─────────────────────────────────────────────────
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
@@ -110,7 +110,6 @@ services:
       start_period: 30s
     restart: always
 
-  # ── DAG Processor (required in Airflow 3.0) ───────────────────
   airflow-dag-processor:
     <<: *airflow-common
     command: dag-processor
@@ -118,6 +117,27 @@ services:
       <<: *airflow-common-depends-on
       airflow-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: always
 
 volumes:
